@@ -1,109 +1,74 @@
+# main.py
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import requests
-from flask import Flask, request, jsonify
+from typing import List
 
-app = Flask(__name__)
-
-# --- CONFIGURATION ---
-# আপনার দেওয়া এপিআই কী এখানে সেট করা হয়েছে
+# PUBG API Config
 PUBG_API_KEY = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJqdGkiOiI1ODVmN2M1MC1lMWEzLTAxM2UtMWUxYy01YTE3YTU3M2I3NjkiLCJpc3MiOiJnYW1lbG9ja2VyIiwiaWF0IjoxNzY5OTU0MDIzLCJwdWIiOiJibHVlaG9sZSIsInRpdGxlIjoicHViZyIsImFwcCI6Ii02YjgyZDg2Zi00YTdkLTQxMDgtYmRhMy1jNGY3NTViMDhiOGYifQ.cTg4YzqRz8_c-ETKx0RHZMIa9pO4UCG-zL_5ZKCOw3A"
-SHARD = "steam" # pc: steam, kakao | console: xbox, psn
+PUBG_REGION = "steam"  # steam / psn / xbox / kakao
 
-HEADERS = {
-    "Authorization": f"Bearer {PUBG_API_KEY}",
-    "Accept": "application/vnd.api+json"
-}
+app = FastAPI(
+    title="PUBG Player Info API",
+    version="1.0",
+    description="Fetch PUBG player stats with suggestions and colored output"
+)
 
-def get_current_season():
-    try:
-        url = f"https://api.pubg.com/shards/{SHARD}/seasons"
-        res = requests.get(url, headers=HEADERS, timeout=10)
-        if res.status_code == 200:
-            seasons = res.json().get('data', [])
-            for s in seasons:
-                if s.get('attributes', {}).get('isCurrentSeason'):
-                    return s.get('id')
-    except Exception as e:
-        print(f"Season Error: {e}")
-    return None
+class PlayerRequest(BaseModel):
+    player_name: str
 
-@app.route('/pubg', methods=['GET'])
-def get_full_stats():
-    player_name = request.args.get('name')
-    if not player_name:
-        return jsonify({"error": "Please provide a player name"}), 400
+# ANSI color codes for Termux
+GREEN = "\033[92m"
+BLUE = "\033[94m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+RESET = "\033[0m"
 
-    try:
-        # 1. Get Player ID
-        p_res = requests.get(f"https://api.pubg.com/shards/{SHARD}/players?filter[playerNames]={player_name}", headers=HEADERS, timeout=10)
-        
-        if p_res.status_code != 200:
-            return jsonify({"error": f"Player '{player_name}' not found or API error"}), p_res.status_code
-        
-        p_json = p_res.json()
-        if not p_json.get('data'):
-            return jsonify({"error": "No data found for this player"}), 404
-            
-        p_id = p_json['data'][0]['id']
-        season_id = get_current_season()
+@app.post("/pubg/player-info")
+async def get_player_info(data: PlayerRequest):
+    headers = {
+        "Authorization": f"Bearer {PUBG_API_KEY}",
+        "Accept": "application/vnd.api+json"
+    }
 
-        if not season_id:
-            return jsonify({"error": "Could not find current season ID"}), 500
-
-        # 2. Get Season Stats
-        s_res = requests.get(f"https://api.pubg.com/shards/{SHARD}/players/{p_id}/seasons/{season_id}", headers=HEADERS, timeout=10)
-        
-        if s_res.status_code != 200:
-            return jsonify({"error": "Failed to fetch season stats"}), s_res.status_code
-
-        all_game_stats = s_res.json().get('data', {}).get('attributes', {}).get('gameModeStats', {})
-        
-        # Squad-FPP ডাটা না থাকলে সাধারণ Squad ডাটা চেক করবে
-        stats = all_game_stats.get('squad-fpp') or all_game_stats.get('squad') or {}
-
-        if not stats:
-            return jsonify({"error": "No match stats found for this player in current season"}), 404
-
-        # Calculation for K/D
-        kills = stats.get('kills', 0)
-        losses = stats.get('losses', 0)
-        kd = round(kills / max(1, losses), 2)
-        rounds = max(1, stats.get('roundsPlayed', 1))
-
-        # 3. Organizing 15+ Data Points
-        full_info = {
-            "status": "success",
-            "developer": "SEXTY MODS",
-            "player_name": player_name,
-            "data": {
-                "01_Total_Kills": kills,
-                "02_Total_Wins": stats.get('wins', 0),
-                "03_KD_Ratio": kd,
-                "04_Headshot_Kills": stats.get('headshotKills', 0),
-                "05_Total_Damage": round(stats.get('damageDealt', 0), 2),
-                "06_Assists": stats.get('assists', 0),
-                "07_Longest_Kill": f"{round(stats.get('longestKill', 0), 2)}m",
-                "08_Max_Kill_Streak": stats.get('maxKillStreaks', 0),
-                "09_Top_10s": stats.get('top10s', 0),
-                "10_Matches_Played": stats.get('roundsPlayed', 0),
-                "11_Suicides": stats.get('suicides', 0),
-                "12_Team_Kills": stats.get('teamKills', 0),
-                "13_Road_Kills": stats.get('roadKills', 0),
-                "14_Vehicle_Destroys": stats.get('vehicleDestroys', 0),
-                "15_Survival_Time_Avg": f"{round(stats.get('timeSurvived', 0) / rounds / 60, 2)} mins",
-                "16_Heals_Used": stats.get('heals', 0),
-                "17_Boosts_Used": stats.get('boosts', 0),
-                "18_Revives": stats.get('revives', 0)
-            }
+    # Step 1: Search player
+    search_url = f"https://api.pubg.com/shards/{PUBG_REGION}/players?filter[playerNames]={data.player_name}"
+    res = requests.get(search_url, headers=headers)
+    
+    if res.status_code != 200:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
+    
+    player_data_list = res.json().get("data", [])
+    
+    if not player_data_list:
+        return {
+            "status": "error",
+            "message": f"{RED}No exact player found matching '{data.player_name}'{RESET}",
+            "suggestions": []  # API নিজে partial suggestions দেয় না, তাই আমরা empty রাখছি
         }
-        return jsonify(full_info)
+    
+    results = []
+    
+    # Step 2: Fetch lifetime stats for each matched player
+    for player in player_data_list:
+        player_id = player["id"]
+        player_name = player["attributes"]["name"]
 
-    except Exception as e:
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
-
-# Vercel এর জন্য হোম রুট
-@app.route('/')
-def home():
-    return "🔥 PUBG API is Live! Use: /pubg?name=PlayerName"
-
-if __name__ == '__main__':
-    app.run(debug=True)
+        season_url = f"https://api.pubg.com/shards/{PUBG_REGION}/players/{player_id}/seasons/lifetime"
+        season_res = requests.get(season_url, headers=headers)
+        
+        if season_res.status_code != 200:
+            stats = {"error": season_res.text}
+        else:
+            stats = season_res.json()["data"]["attributes"]["gameModeStats"]
+        
+        results.append({
+            "player_name": f"{GREEN}{player_name}{RESET}",
+            "player_id": f"{BLUE}{player_id}{RESET}",
+            "stats": stats
+        })
+    
+    return {
+        "status": "success",
+        "results": results
+    }
